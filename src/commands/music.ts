@@ -1,7 +1,7 @@
 import { ApplyOptions } from '@sapphire/decorators';
 import { Args, Command } from '@sapphire/framework';
 import { Subcommand } from '@sapphire/plugin-subcommands';
-import type { Message } from 'discord.js';
+import { type Message, EmbedBuilder } from 'discord.js';
 import {
 	AudioPlayerStatus,
 	StreamType,
@@ -14,6 +14,7 @@ import {
 } from '@discordjs/voice';
 
 import ytdl from 'ytdl-core';
+import { Song } from '../interfaces/music.type';
 
 @ApplyOptions<Command.Options>({
 	description: 'Music Commands to add, remove and manage songs on queue.'
@@ -21,6 +22,10 @@ import ytdl from 'ytdl-core';
 export class UserCommand extends Subcommand {
 	player = createAudioPlayer();
 	connection: VoiceConnection | undefined = undefined;
+
+	queue: Song[] = [];
+
+	currentSongIndex = 0;
 
 	public constructor(context: Subcommand.Context, options: Subcommand.Options) {
 		super(context, {
@@ -36,6 +41,11 @@ export class UserCommand extends Subcommand {
 				{
 					name: 'stop',
 					messageRun: 'stopMusic'
+				},
+
+				{
+					name: 'viewQueue',
+					messageRun: 'seeQueue'
 				}
 			]
 		});
@@ -53,23 +63,35 @@ export class UserCommand extends Subcommand {
 
 			this.connection.subscribe(this.player);
 
-
 			const videoUrl = await args.pick('url');
 
-			const audio = ytdl(videoUrl.toString(), {filter: 'audioonly', dlChunkSize: 4096, highWaterMark: 1 << 30});
+			const song: Song = {
+				url: videoUrl.toString()
+			};
 
-			const resource = createAudioResource(audio, {
-				inputType: StreamType.Arbitrary,
-				inlineVolume: true
-			});
+			this.addToQueue(song);
 
-			this.player.play(resource);
+			console.log(this.queue);
 
-			this.player.on('error', (err) => {
-				console.log(err.message);
-			})
+			if (this.player.state.status !== AudioPlayerStatus.Playing) {
+				this.playAudioResource(this.queue[this.currentSongIndex].url);
 
-			return entersState(this.player, AudioPlayerStatus.Playing, 5000);
+				this.player.on('stateChange', (oldState, newState) => {
+					if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) {
+						if (this.currentSongIndex + 1 > this.queue.length - 1) {
+							this.currentSongIndex = 0;
+						} else {
+							this.currentSongIndex += 1;
+						}
+
+						this.playAudioResource(this.queue[this.currentSongIndex].url);
+					}
+				});
+
+				return entersState(this.player, AudioPlayerStatus.Playing, 5000);
+			} else {
+				return;
+			}
 		} catch (e) {
 			console.log(e);
 			throw e;
@@ -78,11 +100,36 @@ export class UserCommand extends Subcommand {
 
 	public async stopMusic(_message: Message, _args: Args) {
 		try {
-			entersState(this.player, AudioPlayerStatus.Idle, 5000);
-			return this.player.stop();
+			entersState(this.player, AudioPlayerStatus.Paused, 5000);
+			return this.player.pause();
 		} catch (e) {
 			throw e;
 		}
+	}
+
+	public async seeQueue(message: Message, _args: Args) {
+		const embed = new EmbedBuilder().setTitle('Current Songs Queued').setColor('Red');
+
+		this.queue.forEach((song: Song) => {
+			embed.addFields({ name: song.name ?? 'noname', value: song.url });
+		});
+
+		return await message.channel.send({ embeds: [embed] });
+	}
+
+	private async playAudioResource(url: string) {
+		const audio = ytdl(url.toString(), { filter: 'audioonly', dlChunkSize: 4096, highWaterMark: 1 << 30, liveBuffer: 20000 });
+
+		const resource = createAudioResource(audio, {
+			inputType: StreamType.Arbitrary,
+			inlineVolume: true
+		});
+
+		this.player.play(resource);
+	}
+
+	private async addToQueue(song: Song) {
+		this.queue.push(song);
 	}
 
 	private async connect(message: Message) {

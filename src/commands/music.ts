@@ -56,7 +56,7 @@ export class UserCommand extends Subcommand {
 
 			const videoUrl = await args.pick('url');
 
-			const audio = ytdl(videoUrl.toString(), {filter: 'audioonly'});
+			const audio = ytdl(videoUrl.toString(), {filter: 'audioonly', dlChunkSize: 4096, highWaterMark: 1 << 30});
 
 			const resource = createAudioResource(audio, {
 				inputType: StreamType.Arbitrary,
@@ -64,6 +64,10 @@ export class UserCommand extends Subcommand {
 			});
 
 			this.player.play(resource);
+
+			this.player.on('error', (err) => {
+				console.log(err.message);
+			})
 
 			return entersState(this.player, AudioPlayerStatus.Playing, 5000);
 		} catch (e) {

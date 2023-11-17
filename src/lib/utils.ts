@@ -6,7 +6,9 @@ import {
 	type MessageCommandSuccessPayload
 } from '@sapphire/framework';
 import { cyan } from 'colorette';
-import type { APIUser, Guild, User } from 'discord.js';
+import type { APIUser, Guild, Message, User } from 'discord.js';
+import { ServerInfo } from '../interfaces/music.type';
+import { AudioPlayer } from '@discordjs/voice';
 
 export function logSuccessCommand(payload: ContextMenuCommandSuccessPayload | ChatInputCommandSuccessPayload | MessageCommandSuccessPayload): void {
 	let successLoggerData: ReturnType<typeof getSuccessLoggerData>;
@@ -46,10 +48,25 @@ function getGuildInfo(guild: Guild | null) {
 	return `${guild.name}[${cyan(guild.id)}]`;
 }
 
-export function incrementIndex (arrLength: number, c_index: number) {
-	if (c_index + 1 > arrLength - 1) {
-		return 0;
-	} else {
-		return c_index + 1;
+export function getCurrentServerConnection(servers: ServerInfo[], serverIndex?: number, message?: Message) {
+	const s_index = servers.findIndex((server: ServerInfo) => server.serverId === message?.guildId);
+
+	let server: ServerInfo | null = null;
+
+	if (!serverIndex || s_index === -1) {
+		servers.push({
+			serverId: message?.guildId,
+			lastChannelId: null,
+			connection: undefined,
+			player: new AudioPlayer(),
+			queue: [],
+			currentSongIndex: 0
+		});
+
+		serverIndex = servers.length - 1;
 	}
+
+	server = servers[s_index] ?? servers[serverIndex];
+
+	return server;
 }

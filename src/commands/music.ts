@@ -1,7 +1,7 @@
 import { ApplyOptions } from '@sapphire/decorators';
 import { Args, Command } from '@sapphire/framework';
 import { Subcommand } from '@sapphire/plugin-subcommands';
-import { type Message, EmbedBuilder } from 'discord.js';
+import { type Message, EmbedBuilder, TextChannel } from 'discord.js';
 import {
 	AudioPlayer,
 	AudioPlayerStatus,
@@ -14,12 +14,12 @@ import {
 
 import ytdl from 'ytdl-core';
 import { ServerInfo, Song } from '../interfaces/music.type';
+import { getCurrentServerConnection } from '../lib/utils';
 
 @ApplyOptions<Command.Options>({
 	description: 'Music Commands to add, remove and manage songs on queue.'
 })
 export class UserCommand extends Subcommand {
-	
 	serversInfo: ServerInfo[] = [];
 
 	public constructor(context: Subcommand.Context, options: Subcommand.Options) {
@@ -45,53 +45,39 @@ export class UserCommand extends Subcommand {
 
 				{
 					name: 'skip',
-					messageRun: 'skipSong',
+					messageRun: 'skipSong'
 				}
 			]
 		});
 
-		this.serversInfo.forEach((server, index) => {
-			server.player.on('stateChange', (oldState, newState) => {
-				if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) {
-					server.currentSongIndex++;
-	
-					if (server.currentSongIndex > server.queue.length - 1) {
-						server.currentSongIndex = 0;
-						return;
-					}
-	
-					this.playMusic(undefined, undefined, index);
-				}
-			})
-		})
+		this.container.client.on('sentMusicCommand', (guildId, channelId) => {
+			const findIndex = this.serversInfo.findIndex((server) => server.serverId === guildId);
+
+			if (findIndex !== -1) {
+				this.serversInfo[findIndex].lastChannelId = channelId as string;
+			}
+		});
 	}
 
 	public async playMusic(message?: Message, args?: Args, serverIndex?: number) {
+		const server = getCurrentServerConnection(this.serversInfo, serverIndex, message);
 
-		const s_index = this.serversInfo.findIndex((server: ServerInfo) => server.serverId === message?.guildId);
+		serverIndex = this.serversInfo.findIndex((servers) => servers.serverId === server.serverId);
 
-		if (!serverIndex || s_index === -1) {
-			this.serversInfo.push({
-				serverId: message?.guildId,
-				connection: undefined,
-				player: new AudioPlayer(),
-				queue: [],
-				currentSongIndex: 0,
-			});
-
-			serverIndex = this.serversInfo.length - 1;
+		if (serverIndex === this.serversInfo.length - 1) {
+			//If the server is recently added, register events for him.
+			//otherwise if server is already on array, events are already registered.
+			this.registerEvents(server, serverIndex);
 		}
-		
-		const server = this.serversInfo[serverIndex];
 
 		try {
-			if (!server.connection && message) {
+			if ((!server.connection || server.connection.state.status === VoiceConnectionStatus.Disconnected) && message) {
 				server.connection = await this.connect(message);
 
 				if (!server.connection) {
 					throw `Couldn't connect to voice channel.`;
 				}
-	
+
 				server.connection.subscribe(server.player);
 			}
 
@@ -100,8 +86,11 @@ export class UserCommand extends Subcommand {
 			if ((await args?.peekResult('url'))?.isOk()) {
 				const videoUrl = await args!.pick('url');
 
+				const videoInfo = await ytdl.getInfo(videoUrl.toString());
+
 				song = {
-					url: videoUrl.toString()
+					url: videoUrl.toString(),
+					name: videoInfo.videoDetails.title
 				};
 
 				if (!song.url.includes('youtube') && !song.url.includes('youtu.be')) {
@@ -110,7 +99,7 @@ export class UserCommand extends Subcommand {
 
 				this.addToQueue(serverIndex, song);
 			} else {
-				song = server.queue[server.currentSongIndex];	
+				song = server.queue[server.currentSongIndex];
 			}
 
 			if (server.player.state.status !== AudioPlayerStatus.Playing) {
@@ -125,38 +114,32 @@ export class UserCommand extends Subcommand {
 		}
 	}
 
-	public async skipSong(serverIndex: number) {
+	public async skipSong(message: Message) {
+		const serverIndex = this.serversInfo.findIndex((server) => server.serverId === message.guildId);
+
+		if (serverIndex === -1) {
+			return;
+		}
+
 		await this.stopMusic(undefined, undefined, serverIndex);
 		this.serversInfo[serverIndex].currentSongIndex++;
 		await this.playMusic(undefined, undefined, serverIndex);
 	}
 
 	public async stopMusic(message?: Message, _args?: Args, serverIndex?: number) {
-		const s_index = this.serversInfo.findIndex((server: ServerInfo) => server.serverId === message?.guildId);
-
-		let player: AudioPlayer | null = null;
-
-		if (!serverIndex || s_index === -1) {
-			return;
-		}
-
-		if (!serverIndex) {
-			player = this.serversInfo[s_index].player;
-		} else {
-			player = this.serversInfo[serverIndex].player;
-		}
+		const server = getCurrentServerConnection(this.serversInfo, serverIndex, message);
+		serverIndex = this.serversInfo.findIndex((servers) => servers.serverId === server.serverId);
 
 		try {
-			entersState(player, AudioPlayerStatus.Paused, 5000);
+			entersState(server.player, AudioPlayerStatus.Paused, 5000);
 			//this.currentSongIndex++;
-			return player.pause();
+			return server.player.pause();
 		} catch (e) {
 			throw e;
 		}
 	}
 
 	public async seeQueue(message: Message, _args: Args) {
-
 		const serverId = message.guildId;
 
 		const serverIndex = this.serversInfo.findIndex((server: ServerInfo) => server.serverId === serverId);
@@ -208,5 +191,34 @@ export class UserCommand extends Subcommand {
 			connection.destroy();
 			throw e;
 		}
+	}
+
+	private registerEvents(server: ServerInfo, index: number) {
+		let timeouts: Record<string, NodeJS.Timeout> = {};
+
+		server.player.on('stateChange', (oldState, newState) => {
+			if (newState.status === AudioPlayerStatus.Idle) {
+				timeouts[server.serverId ?? ''] = setTimeout(() => {
+					server.connection?.disconnect();
+					const channel = this.container.client.channels.cache.get(server.lastChannelId ?? '') as TextChannel;
+					channel?.send('Disconnected due to inactivity 😴😴');
+				}, 30_000);
+			}
+
+			if (newState.status === AudioPlayerStatus.Playing) {
+				clearTimeout(timeouts[server.serverId ?? '']);
+			}
+
+			if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) {
+				server.currentSongIndex++;
+
+				if (server.currentSongIndex > server.queue.length - 1) {
+					server.currentSongIndex = 0;
+					return;
+				}
+
+				this.playMusic(undefined, undefined, index);
+			}
+		});
 	}
 }

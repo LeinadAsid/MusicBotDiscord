@@ -6,6 +6,10 @@ import { logSuccessCommand } from '../../../lib/utils';
 export class UserEvent extends Listener {
 	public override run(payload: MessageCommandSuccessPayload) {
 		logSuccessCommand(payload);
+
+		if (payload.context.commandName === 'music') {
+			this.container.client.emit('sentMusicCommand', payload.message.guildId, payload.message.channelId);
+		}
 	}
 
 	public override onLoad() {

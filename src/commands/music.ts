@@ -21,6 +21,7 @@ import { getCurrentServerConnection } from '../lib/utils';
 })
 export class UserCommand extends Subcommand {
 	serversInfo: ServerInfo[] = [];
+	timeouts: Record<string, NodeJS.Timeout> = {};
 
 	public constructor(context: Subcommand.Context, options: Subcommand.Options) {
 		super(context, {
@@ -59,14 +60,13 @@ export class UserCommand extends Subcommand {
 		});
 	}
 
-	public async playMusic(message?: Message, args?: Args, serverIndex?: number) {
-		const server = getCurrentServerConnection(this.serversInfo, serverIndex, message);
+	public async playMusic(message: Message, args: Args) {
+		const server = getCurrentServerConnection(this.serversInfo, message);
 
-		serverIndex = this.serversInfo.findIndex((servers) => servers.serverId === server.serverId);
+		let serverIndex = this.serversInfo.findIndex((servers) => servers.serverId === server.serverId);
 
-		if (serverIndex === this.serversInfo.length - 1) {
-			//If the server is recently added, register events for him.
-			//otherwise if server is already on array, events are already registered.
+		if (!this.serversInfo[serverIndex].eventsRegistered) {
+			//If the server doesn't have eventsRegistered, do it.
 			this.registerEvents(server, serverIndex);
 		}
 
@@ -94,7 +94,8 @@ export class UserCommand extends Subcommand {
 				};
 
 				if (!song.url.includes('youtube') && !song.url.includes('youtu.be')) {
-					return message!.reply('Invalid link, try using a youtube video');
+					message!.reply('Invalid link, try using a youtube video');
+					return;
 				}
 
 				this.addToQueue(serverIndex, song);
@@ -102,12 +103,8 @@ export class UserCommand extends Subcommand {
 				song = server.queue[server.currentSongIndex];
 			}
 
-			if (server.player.state.status !== AudioPlayerStatus.Playing) {
-				await this.playAudioResource(server.player, server.queue[server.currentSongIndex].url);
-				return entersState(server.player, AudioPlayerStatus.Playing, 5000);
-			} else {
-				return;
-			}
+
+			this.playNextSong(serverIndex);
 		} catch (e) {
 			console.log(e);
 			throw e;
@@ -121,22 +118,15 @@ export class UserCommand extends Subcommand {
 			return;
 		}
 
-		await this.stopMusic(undefined, undefined, serverIndex);
+		await this.stop(serverIndex);
 		this.serversInfo[serverIndex].currentSongIndex++;
-		await this.playMusic(undefined, undefined, serverIndex);
+		await this.playNextSong(serverIndex);
 	}
 
-	public async stopMusic(message?: Message, _args?: Args, serverIndex?: number) {
-		const server = getCurrentServerConnection(this.serversInfo, serverIndex, message);
-		serverIndex = this.serversInfo.findIndex((servers) => servers.serverId === server.serverId);
-
-		try {
-			entersState(server.player, AudioPlayerStatus.Paused, 5000);
-			//this.currentSongIndex++;
-			return server.player.pause();
-		} catch (e) {
-			throw e;
-		}
+	public async stopMusic(message?: Message) {
+		const server = getCurrentServerConnection(this.serversInfo, message);
+		let serverIndex = this.serversInfo.findIndex((servers) => servers.serverId === server.serverId);
+		this.stop(serverIndex);
 	}
 
 	public async seeQueue(message: Message, _args: Args) {
@@ -193,12 +183,34 @@ export class UserCommand extends Subcommand {
 		}
 	}
 
+	private async playNextSong(serverIndex: number) {
+		const server = this.serversInfo[serverIndex];
+
+		if (server.player.state.status !== AudioPlayerStatus.Playing) {
+			await this.playAudioResource(server.player, server.queue[server.currentSongIndex].url);
+			return entersState(server.player, AudioPlayerStatus.Playing, 5000);
+		} else {
+			return;
+		}
+	}
+	
+	private async stop(serverIndex: number) {
+		let server = this.serversInfo[serverIndex];
+		try {
+			entersState(server.player, AudioPlayerStatus.Paused, 5000);
+			//this.currentSongIndex++;
+			return server.player.pause();
+		} catch (e) {
+			throw e;
+		}
+	}
+
 	private registerEvents(server: ServerInfo, index: number) {
-		let timeouts: Record<string, NodeJS.Timeout> = {};
+		server.eventsRegistered = true;
 
 		server.player.on('stateChange', (oldState, newState) => {
 			if (newState.status === AudioPlayerStatus.Idle) {
-				timeouts[server.serverId ?? ''] = setTimeout(() => {
+				this.timeouts[server.serverId ?? ''] = setTimeout(() => {
 					server.connection?.disconnect();
 					const channel = this.container.client.channels.cache.get(server.lastChannelId ?? '') as TextChannel;
 					channel?.send('Disconnected due to inactivity 😴😴');
@@ -206,18 +218,18 @@ export class UserCommand extends Subcommand {
 			}
 
 			if (newState.status === AudioPlayerStatus.Playing) {
-				clearTimeout(timeouts[server.serverId ?? '']);
+				clearTimeout(this.timeouts[server.serverId ?? '']);
 			}
 
 			if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) {
-				server.currentSongIndex++;
+				server.currentSongIndex += 1;
 
 				if (server.currentSongIndex > server.queue.length - 1) {
 					server.currentSongIndex = 0;
 					return;
 				}
 
-				this.playMusic(undefined, undefined, index);
+				this.playNextSong(index);
 			}
 		});
 	}

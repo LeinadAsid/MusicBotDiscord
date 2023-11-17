@@ -48,25 +48,34 @@ function getGuildInfo(guild: Guild | null) {
 	return `${guild.name}[${cyan(guild.id)}]`;
 }
 
-export function getCurrentServerConnection(servers: ServerInfo[], serverIndex?: number, message?: Message) {
+export function getCurrentServerConnection(servers: ServerInfo[], message?: Message, serverIndex?: number) {
 	const s_index = servers.findIndex((server: ServerInfo) => server.serverId === message?.guildId);
 
 	let server: ServerInfo | null = null;
 
-	if (!serverIndex || s_index === -1) {
-		servers.push({
-			serverId: message?.guildId,
-			lastChannelId: null,
-			connection: undefined,
-			player: new AudioPlayer(),
-			queue: [],
-			currentSongIndex: 0
-		});
+	console.log(serverIndex, s_index);
 
-		serverIndex = servers.length - 1;
+	if (!serverIndex && serverIndex !== 0) {
+		if (s_index === -1) {
+			servers.push({
+				serverId: message?.guildId,
+				lastChannelId: null,
+				eventsRegistered: false,
+				connection: undefined,
+				player: new AudioPlayer(),
+				queue: [],
+				currentSongIndex: 0
+			});
+		
+			server = servers[servers.length - 1];
+		} else {
+			server = servers[s_index];
+		}
+	} else {
+		server = servers[serverIndex];
 	}
 
-	server = servers[s_index] ?? servers[serverIndex];
+	console.log(server);
 
 	return server;
 }

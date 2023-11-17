@@ -8,6 +8,7 @@ export type Song = {
 export type ServerInfo = {
     serverId: string | null | undefined,
     lastChannelId: string | null,
+    eventsRegistered: boolean,
     player: AudioPlayer,
     queue: Song[],
     currentSongIndex: number,

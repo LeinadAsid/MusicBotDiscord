@@ -126,19 +126,29 @@ export class UserCommand extends Subcommand {
 	}
 
 	public async skipSong(serverIndex: number) {
-		await this.stopMusic(serverIndex);
+		await this.stopMusic(undefined, undefined, serverIndex);
 		this.serversInfo[serverIndex].currentSongIndex++;
 		await this.playMusic(undefined, undefined, serverIndex);
 	}
 
-	public async stopMusic(serverIndex: number, _message?: Message, _args?: Args) {
+	public async stopMusic(message?: Message, _args?: Args, serverIndex?: number) {
+		const s_index = this.serversInfo.findIndex((server: ServerInfo) => server.serverId === message?.guildId);
+
+		let player: AudioPlayer | null = null;
+
+		if (!serverIndex || s_index === -1) {
+			return;
+		}
+
+		if (!serverIndex) {
+			player = this.serversInfo[s_index].player;
+		} else {
+			player = this.serversInfo[serverIndex].player;
+		}
+
 		try {
-			const player = this.serversInfo[serverIndex].player
-
 			entersState(player, AudioPlayerStatus.Paused, 5000);
-
 			//this.currentSongIndex++;
-
 			return player.pause();
 		} catch (e) {
 			throw e;

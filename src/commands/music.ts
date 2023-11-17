@@ -3,29 +3,24 @@ import { Args, Command } from '@sapphire/framework';
 import { Subcommand } from '@sapphire/plugin-subcommands';
 import { type Message, EmbedBuilder } from 'discord.js';
 import {
+	AudioPlayer,
 	AudioPlayerStatus,
 	StreamType,
-	VoiceConnection,
 	VoiceConnectionStatus,
-	createAudioPlayer,
 	createAudioResource,
 	entersState,
 	joinVoiceChannel
 } from '@discordjs/voice';
 
 import ytdl from 'ytdl-core';
-import { Song } from '../interfaces/music.type';
+import { ServerInfo, Song } from '../interfaces/music.type';
 
 @ApplyOptions<Command.Options>({
 	description: 'Music Commands to add, remove and manage songs on queue.'
 })
 export class UserCommand extends Subcommand {
-	player = createAudioPlayer();
-	connection: VoiceConnection | undefined = undefined;
-
-	queue: Song[] = [];
-
-	currentSongIndex = 0;
+	
+	serversInfo: ServerInfo[] = [];
 
 	public constructor(context: Subcommand.Context, options: Subcommand.Options) {
 		super(context, {
@@ -44,51 +39,83 @@ export class UserCommand extends Subcommand {
 				},
 
 				{
-					name: 'viewQueue',
+					name: 'queue',
 					messageRun: 'seeQueue'
+				},
+
+				{
+					name: 'skip',
+					messageRun: 'skipSong',
 				}
 			]
 		});
+
+		this.serversInfo.forEach((server, index) => {
+			server.player.on('stateChange', (oldState, newState) => {
+				if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) {
+					server.currentSongIndex++;
+	
+					if (server.currentSongIndex > server.queue.length - 1) {
+						server.currentSongIndex = 0;
+						return;
+					}
+	
+					this.playMusic(undefined, undefined, index);
+				}
+			})
+		})
 	}
 
-	public async playMusic(message: Message, args: Args) {
+	public async playMusic(message?: Message, args?: Args, serverIndex?: number) {
+
+		const s_index = this.serversInfo.findIndex((server: ServerInfo) => server.serverId === message?.guildId);
+
+		if (!serverIndex || s_index === -1) {
+			this.serversInfo.push({
+				serverId: message?.guildId,
+				connection: undefined,
+				player: new AudioPlayer(),
+				queue: [],
+				currentSongIndex: 0,
+			});
+
+			serverIndex = this.serversInfo.length - 1;
+		}
+		
+		const server = this.serversInfo[serverIndex];
+
 		try {
-			if (!this.connection) {
-				this.connection = await this.connect(message);
+			if (!server.connection && message) {
+				server.connection = await this.connect(message);
+
+				if (!server.connection) {
+					throw `Couldn't connect to voice channel.`;
+				}
+	
+				server.connection.subscribe(server.player);
 			}
 
-			if (!this.connection) {
-				throw `Couldn't connect to voice channel.`;
+			let song: Song | null = null;
+
+			if ((await args?.peekResult('url'))?.isOk()) {
+				const videoUrl = await args!.pick('url');
+
+				song = {
+					url: videoUrl.toString()
+				};
+
+				if (!song.url.includes('youtube') && !song.url.includes('youtu.be')) {
+					return message!.reply('Invalid link, try using a youtube video');
+				}
+
+				this.addToQueue(serverIndex, song);
+			} else {
+				song = server.queue[server.currentSongIndex];	
 			}
 
-			this.connection.subscribe(this.player);
-
-			const videoUrl = await args.pick('url');
-
-			const song: Song = {
-				url: videoUrl.toString()
-			};
-
-			this.addToQueue(song);
-
-			console.log(this.queue);
-
-			if (this.player.state.status !== AudioPlayerStatus.Playing) {
-				this.playAudioResource(this.queue[this.currentSongIndex].url);
-
-				this.player.on('stateChange', (oldState, newState) => {
-					if (oldState.status === AudioPlayerStatus.Playing && newState.status === AudioPlayerStatus.Idle) {
-						if (this.currentSongIndex + 1 > this.queue.length - 1) {
-							this.currentSongIndex = 0;
-						} else {
-							this.currentSongIndex += 1;
-						}
-
-						this.playAudioResource(this.queue[this.currentSongIndex].url);
-					}
-				});
-
-				return entersState(this.player, AudioPlayerStatus.Playing, 5000);
+			if (server.player.state.status !== AudioPlayerStatus.Playing) {
+				await this.playAudioResource(server.player, server.queue[server.currentSongIndex].url);
+				return entersState(server.player, AudioPlayerStatus.Playing, 5000);
 			} else {
 				return;
 			}
@@ -98,26 +125,46 @@ export class UserCommand extends Subcommand {
 		}
 	}
 
-	public async stopMusic(_message: Message, _args: Args) {
+	public async skipSong(serverIndex: number) {
+		await this.stopMusic(serverIndex);
+		this.serversInfo[serverIndex].currentSongIndex++;
+		await this.playMusic(undefined, undefined, serverIndex);
+	}
+
+	public async stopMusic(serverIndex: number, _message?: Message, _args?: Args) {
 		try {
-			entersState(this.player, AudioPlayerStatus.Paused, 5000);
-			return this.player.pause();
+			const player = this.serversInfo[serverIndex].player
+
+			entersState(player, AudioPlayerStatus.Paused, 5000);
+
+			//this.currentSongIndex++;
+
+			return player.pause();
 		} catch (e) {
 			throw e;
 		}
 	}
 
 	public async seeQueue(message: Message, _args: Args) {
+
+		const serverId = message.guildId;
+
+		const serverIndex = this.serversInfo.findIndex((server: ServerInfo) => server.serverId === serverId);
+
+		if (serverIndex === -1) {
+			return;
+		}
+
 		const embed = new EmbedBuilder().setTitle('Current Songs Queued').setColor('Red');
 
-		this.queue.forEach((song: Song) => {
+		this.serversInfo[serverIndex].queue.forEach((song: Song) => {
 			embed.addFields({ name: song.name ?? 'noname', value: song.url });
 		});
 
 		return await message.channel.send({ embeds: [embed] });
 	}
 
-	private async playAudioResource(url: string) {
+	private async playAudioResource(player: AudioPlayer, url: string) {
 		const audio = ytdl(url.toString(), { filter: 'audioonly', dlChunkSize: 4096, highWaterMark: 1 << 30, liveBuffer: 20000 });
 
 		const resource = createAudioResource(audio, {
@@ -125,11 +172,11 @@ export class UserCommand extends Subcommand {
 			inlineVolume: true
 		});
 
-		this.player.play(resource);
+		player.play(resource);
 	}
 
-	private async addToQueue(song: Song) {
-		this.queue.push(song);
+	private async addToQueue(serverIndex: number, song: Song) {
+		this.serversInfo[serverIndex].queue.push(song);
 	}
 
 	private async connect(message: Message) {

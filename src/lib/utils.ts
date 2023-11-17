@@ -45,3 +45,11 @@ function getGuildInfo(guild: Guild | null) {
 	if (guild === null) return 'Direct Messages';
 	return `${guild.name}[${cyan(guild.id)}]`;
 }
+
+export function incrementIndex (arrLength: number, c_index: number) {
+	if (c_index + 1 > arrLength - 1) {
+		return 0;
+	} else {
+		return c_index + 1;
+	}
+}

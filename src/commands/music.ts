@@ -47,6 +47,11 @@ export class UserCommand extends Subcommand {
 				{
 					name: 'skip',
 					messageRun: 'skipSong'
+				},
+
+				{
+					name: 'purge',
+					messageRun: 'deleteQueue',
 				}
 			]
 		});
@@ -111,6 +116,18 @@ export class UserCommand extends Subcommand {
 		}
 	}
 
+	public async deleteQueue(message: Message) {
+		const serverIndex = this.serversInfo.findIndex((server) => server.serverId === message.guildId);
+		 
+		if (serverIndex === -1) {
+			return;
+		}
+
+		this.serversInfo[serverIndex].queue = [];
+
+		return message.reply('Queue was purged.');
+	}
+
 	public async skipSong(message: Message) {
 		const serverIndex = this.serversInfo.findIndex((server) => server.serverId === message.guildId);
 
@@ -135,11 +152,16 @@ export class UserCommand extends Subcommand {
 		const serverIndex = this.serversInfo.findIndex((server: ServerInfo) => server.serverId === serverId);
 
 		if (serverIndex === -1) {
-			return;
+			return message.reply('No queue was found in this server!');
+		}
+
+		if (this.serversInfo[serverIndex].queue.length === 0) {
+			return message.reply('Queue is empty.');
 		}
 
 		const embed = new EmbedBuilder().setTitle('Current Songs Queued').setColor('Red');
 
+		
 		this.serversInfo[serverIndex].queue.forEach((song: Song) => {
 			embed.addFields({ name: song.name ?? 'noname', value: song.url });
 		});
